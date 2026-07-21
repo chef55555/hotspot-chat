@@ -294,9 +294,10 @@ class MainActivity : AppCompatActivity() {
         prefs.edit().putString("display_name", newName).apply()
         nameInput.setText(newName)
         logD("I", "Display name set to \"$newName\"")
-        // Tell connected peers so their view updates live.
+        // Tell connected peers so their view updates live. Off the UI thread —
+        // socket writes throw NetworkOnMainThreadException on the main thread.
         val line = "NAME|${currentName()}|$newName"
-        relay(line, exclude = null, includeControl = true)
+        ioExecutor.execute { relay(line, exclude = null, includeControl = true) }
         updateStatus()
         toast("Name saved")
     }
@@ -529,6 +530,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun handleSocket(socket: Socket) {
         var peerName: String? = null
+        var myPeer: Peer? = null
         try {
             socket.tcpNoDelay = true
             socket.keepAlive = true
@@ -555,12 +557,15 @@ class MainActivity : AppCompatActivity() {
             }
 
             val peer = Peer(name, socket, writer).apply { display = peerDisplay }
-            val existing = peers.putIfAbsent(name, peer)
+            // Replace any prior connection for this peer: since only the
+            // initiator dials, a fresh inbound/outbound link means the old one
+            // is stale. Keep the new one and tear the old down.
+            val existing = peers.put(name, peer)
             if (existing != null) {
-                logD("D", "Duplicate connection to $name, dropping new one")
-                socket.close()
-                return
+                logD("W", "Replacing stale connection to $name")
+                try { existing.socket.close() } catch (_: Exception) {}
             }
+            myPeer = peer
             peerName = name
             logD("I", "Connected to $name (\"$peerDisplay\")")
             updateStatus()
@@ -571,18 +576,23 @@ class MainActivity : AppCompatActivity() {
                 onWireLine(line!!, peer)
             }
         } catch (e: Exception) {
-            if (peerName != null) logD("W", "Link to $peerName ended: ${e.message}")
+            if (peerName != null) {
+                logD("W", "Link to $peerName ended: ${e.javaClass.simpleName}: ${e.message}")
+            }
         } finally {
-            if (peerName != null) dropPeer(peerName, "read loop ended")
+            myPeer?.let { dropPeer(it, "read loop ended") }
             try { socket.close() } catch (_: Exception) {}
         }
     }
 
-    private fun dropPeer(name: String, reason: String) {
-        val peer = peers.remove(name) ?: return
+    /** Remove [peer] only if it is still the current mapping for its name. */
+    private fun dropPeer(peer: Peer, reason: String) {
+        val wasCurrent = peers.remove(peer.name, peer)
         try { peer.socket.close() } catch (_: Exception) {}
-        logD("I", "Disconnected from $name ($reason). Will auto-reconnect if in range.")
-        updateStatus()
+        if (wasCurrent) {
+            logD("I", "Disconnected from ${peer.name} ($reason). Will auto-reconnect if in range.")
+            updateStatus()
+        }
     }
 
     // --------------------------------------------------------------- messaging
@@ -631,7 +641,8 @@ class MainActivity : AppCompatActivity() {
         msgSent++
         appendChat("me: $text")
         logD("D", "Send msg $msgId to ${peers.size} peer(s)")
-        relay(line, exclude = null, includeControl = false)
+        // Socket writes must never run on the UI thread (NetworkOnMainThreadException).
+        ioExecutor.execute { relay(line, exclude = null, includeControl = false) }
         updateStatus()
     }
 
@@ -652,7 +663,7 @@ class MainActivity : AppCompatActivity() {
             }
             true
         } catch (e: Exception) {
-            dropPeer(peer.name, "write failed: ${e.message}")
+            dropPeer(peer, "write failed: ${e.javaClass.simpleName}: ${e.message}")
             false
         }
     }
@@ -672,9 +683,9 @@ class MainActivity : AppCompatActivity() {
             if (!running) return@scheduleWithFixedDelay
             try {
                 val now = System.currentTimeMillis()
-                for ((name, peer) in peers) {
+                for ((_, peer) in peers) {
                     if (now - peer.lastRx > READ_TIMEOUT_MS) {
-                        dropPeer(name, "heartbeat timeout")
+                        dropPeer(peer, "heartbeat timeout")
                     } else {
                         sendRaw(peer, "PING")
                     }
