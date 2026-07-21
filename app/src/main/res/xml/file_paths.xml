@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- The downloaded update.apk lives in the app's internal cache dir. -->
+    <cache-path name="update_cache" path="." />
+    <files-path name="update_files" path="." />
+</paths>

@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write   # needed to publish Releases
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -20,15 +23,19 @@ jobs:
           java-version: '17'
 
       # Pin Gradle 8.4 here so the `gradle` command on PATH IS 8.4 — do not
-      # rely on the runner's preinstalled Gradle (currently 9.x), which breaks
-      # AGP 8.1.4 and the injected Develocity init script.
+      # rely on the runner's preinstalled Gradle (9.x), which breaks AGP 8.1.4
+      # and the injected Develocity init script.
       - name: Set up Gradle 8.4
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.4'
 
+      # versionCode = run number (monotonic), so each build can update the last.
       - name: Build debug APK
-        run: gradle assembleDebug --stacktrace --no-daemon
+        run: >
+          gradle assembleDebug --stacktrace --no-daemon
+          -PversionCode=${{ github.run_number }}
+          -PversionName=1.0.${{ github.run_number }}
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -36,3 +43,30 @@ jobs:
           name: meshchat-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      # ---- Publish a GitHub Release so phones can auto-update ----
+      - name: Stage release assets
+        if: github.event_name == 'push'
+        run: |
+          mkdir -p release
+          cp app/build/outputs/apk/debug/app-debug.apk release/app-debug.apk
+          NOTES=$(printf '%s' "${{ github.event.head_commit.message }}" | head -n 1)
+          jq -n \
+            --argjson vc "${{ github.run_number }}" \
+            --arg vn "1.0.${{ github.run_number }}" \
+            --arg url "https://github.com/${{ github.repository }}/releases/latest/download/app-debug.apk" \
+            --arg notes "$NOTES" \
+            '{versionCode:$vc, versionName:$vn, apkUrl:$url, notes:$notes}' \
+            > release/version.json
+          cat release/version.json
+
+      - name: Publish Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: MeshChat 1.0.${{ github.run_number }}
+          make_latest: true
+          files: |
+            release/app-debug.apk
+            release/version.json

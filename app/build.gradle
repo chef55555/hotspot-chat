@@ -11,12 +11,31 @@ android {
         applicationId "com.meshchat.app"
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        // versionCode/versionName come from Gradle properties so CI can bump
+        // them monotonically (-PversionCode=<run#>). Fallbacks are for local
+        // builds.
+        versionCode = (project.findProperty("versionCode") ?: "1").toString().toInteger()
+        versionName = (project.findProperty("versionName") ?: "1.0").toString()
+    }
+
+    // Stable debug signing key committed to the repo so every CI build shares a
+    // signature and phones can update in place (an ad-hoc random debug key
+    // would cause "signatures do not match" on update).
+    signingConfigs {
+        debugStable {
+            storeFile file("meshchat-debug.keystore")
+            storePassword "meshchat"
+            keyAlias "meshchat"
+            keyPassword "meshchat"
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig signingConfigs.debugStable
+        }
         release {
+            signingConfig signingConfigs.debugStable
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
