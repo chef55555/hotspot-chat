@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Legacy fallback for API 24-25 (no adaptive icons): the background and the
+     mesh composited into a single rounded-square vector. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path android:pathData="M20,0 L88,0 Q108,0 108,20 L108,88 Q108,108 88,108 L20,108 Q0,108 0,88 L0,20 Q0,0 20,0 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0" android:startY="0"
+                android:endX="108" android:endY="108"
+                android:type="linear">
+                <item android:offset="0" android:color="#FF4F46E5" />
+                <item android:offset="1" android:color="#FF06B6D4" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:pathData="M54,54 L54,32 M54,54 L36,66 M54,54 L72,66 M54,32 L36,66 M54,32 L72,66 M36,66 L72,66" />
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M46,54 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0 Z
+                          M47,32 a7,7 0 1,0 14,0 a7,7 0 1,0 -14,0 Z
+                          M29,66 a7,7 0 1,0 14,0 a7,7 0 1,0 -14,0 Z
+                          M65,66 a7,7 0 1,0 14,0 a7,7 0 1,0 -14,0 Z" />
+</vector>
