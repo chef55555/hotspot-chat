@@ -1,9 +1,14 @@
 package com.meshchat.app
 
+import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
@@ -12,6 +17,8 @@ import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.text.method.ScrollingMovementMethod
 import android.util.Log
@@ -24,8 +31,13 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.core.widget.addTextChangedListener
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.BufferedWriter
@@ -111,6 +123,30 @@ class MainActivity : AppCompatActivity() {
     private lateinit var logScroll: ScrollView
     private lateinit var input: EditText
     private lateinit var updateButton: Button
+    private lateinit var typingView: TextView
+
+    // --- typing indicator ---
+    /** peerServiceName -> last time we heard they were typing. */
+    private val typingPeers = ConcurrentHashMap<String, Long>()
+    @Volatile private var localTyping = false
+    private var lastTypingSentAt = 0L
+    private var typingDots = 0
+    private val uiHandler = Handler(Looper.getMainLooper())
+
+    // --- notifications ---
+    @Volatile private var isForeground = false
+    private val requestNotifPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            logD("I", "Notification permission granted=$granted")
+        }
+
+    private val stopTypingRunnable = Runnable { if (localTyping) stopLocalTyping() }
+    private val typingTicker = object : Runnable {
+        override fun run() {
+            updateTypingIndicator()
+            uiHandler.postDelayed(this, 450)
+        }
+    }
 
     private val logBuffer = StringBuilder()
     private val clock = SimpleDateFormat("HH:mm:ss", Locale.US)
@@ -138,6 +174,12 @@ class MainActivity : AppCompatActivity() {
         private const val MAX_CLIPBOARD_BYTES = 500_000
         private const val LOG_BUFFER_CAP = 2_000_000
 
+        private const val CHANNEL_ID = "messages"
+        private const val NOTIF_ID = 1
+        private const val TYPING_TIMEOUT_MS = 5_000L   // clear a peer's indicator after this
+        private const val TYPING_IDLE_MS = 3_500L      // stop sending "typing" after idle
+        private const val TYPING_REFRESH_MS = 2_000L   // resend "typing" at most this often
+
         private const val RELEASE_BASE =
             "https://github.com/chef55555/hotspot-chat/releases/latest/download"
         private const val VERSION_JSON_URL = "$RELEASE_BASE/version.json"
@@ -152,6 +194,10 @@ class MainActivity : AppCompatActivity() {
         displayName = prefs.getString("display_name", null)?.let { sanitizeName(it) } ?: defaultName()
 
         buildUi()
+
+        createNotificationChannel()
+        requestNotificationPermissionIfNeeded()
+        uiHandler.post(typingTicker)
 
         nsdManager = getSystemService(Context.NSD_SERVICE) as NsdManager
         acquireMulticastLock()
@@ -170,9 +216,22 @@ class MainActivity : AppCompatActivity() {
         checkForUpdate(manual = false)
     }
 
+    override fun onResume() {
+        super.onResume()
+        isForeground = true
+        // The user is looking at the app; clear any message notification.
+        try { NotificationManagerCompat.from(this).cancel(NOTIF_ID) } catch (_: Exception) {}
+    }
+
+    override fun onPause() {
+        super.onPause()
+        isForeground = false
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         running = false
+        uiHandler.removeCallbacksAndMessages(null)
         stopDiscovery()
         unregisterService()
         closeAllPeers()
@@ -240,12 +299,37 @@ class MainActivity : AppCompatActivity() {
             logScroll.visibility = View.VISIBLE
         }
 
+        // Typing indicator (animated).
+        typingView = TextView(this).apply {
+            textSize = 12f
+            setPadding(4, 2, 0, 2)
+            alpha = 0.7f
+            visibility = View.GONE
+        }
+        root.addView(typingView)
+
         // Message input row.
         val inputRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
         input = EditText(this).apply { hint = "Type a message" }
+        // Tell peers when we're typing (throttled). Socket writes happen off the
+        // UI thread inside sendTyping().
+        input.addTextChangedListener { editable ->
+            if (!editable.isNullOrBlank()) {
+                localTyping = true
+                val now = System.currentTimeMillis()
+                if (now - lastTypingSentAt > TYPING_REFRESH_MS) {
+                    lastTypingSentAt = now
+                    sendTyping(true)
+                }
+                uiHandler.removeCallbacks(stopTypingRunnable)
+                uiHandler.postDelayed(stopTypingRunnable, TYPING_IDLE_MS)
+            } else if (localTyping) {
+                stopLocalTyping()
+            }
+        }
         inputRow.addView(input, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         inputRow.addView(Button(this).apply {
             text = "Send"
@@ -590,6 +674,7 @@ class MainActivity : AppCompatActivity() {
         val wasCurrent = peers.remove(peer.name, peer)
         try { peer.socket.close() } catch (_: Exception) {}
         if (wasCurrent) {
+            typingPeers.remove(peer.name)
             logD("I", "Disconnected from ${peer.name} ($reason). Will auto-reconnect if in range.")
             updateStatus()
         }
@@ -604,6 +689,7 @@ class MainActivity : AppCompatActivity() {
             line == "PONG" -> { /* liveness only; lastRx already bumped */ }
             line.startsWith("MSG|") -> handleMessage(line, from)
             line.startsWith("NAME|") -> handleName(line, from)
+            line.startsWith("TYPE|") -> handleTyping(line, from)
             else -> logD("D", "Unknown line from ${from.name}: ${line.take(40)}")
         }
     }
@@ -620,6 +706,9 @@ class MainActivity : AppCompatActivity() {
         }
         msgRecv++
         appendChat("$sender: $text")
+        // A message means they're no longer typing.
+        typingPeers.remove(from.name)
+        if (!isForeground) postNotification(sender, text)
         logD("D", "Recv msg $msgId from ${from.name}: \"${text.take(40)}\"")
         relay(line, exclude = from.name, includeControl = false)
         updateStatus()
@@ -632,6 +721,46 @@ class MainActivity : AppCompatActivity() {
         val display = parts[2]
         peers[svc]?.display = display
         logD("I", "$svc is now known as \"$display\"")
+    }
+
+    private fun handleTyping(line: String, from: Peer) {
+        val on = line.substringAfter("TYPE|").trim() == "1"
+        if (on) typingPeers[from.name] = System.currentTimeMillis()
+        else typingPeers.remove(from.name)
+    }
+
+    private fun sendTyping(on: Boolean) {
+        val wire = "TYPE|" + if (on) "1" else "0"
+        ioExecutor.execute { relay(wire, exclude = null, includeControl = true) }
+    }
+
+    private fun stopLocalTyping() {
+        localTyping = false
+        lastTypingSentAt = 0L
+        uiHandler.removeCallbacks(stopTypingRunnable)
+        sendTyping(false)
+    }
+
+    /** Runs on the UI thread (posted via uiHandler); animates the ellipsis. */
+    private fun updateTypingIndicator() {
+        val now = System.currentTimeMillis()
+        val names = ArrayList<String>()
+        for ((svc, ts) in typingPeers) {
+            if (now - ts > TYPING_TIMEOUT_MS) {
+                typingPeers.remove(svc)
+            } else {
+                names.add(peers[svc]?.display ?: svc)
+            }
+        }
+        if (names.isEmpty()) {
+            if (typingView.visibility != View.GONE) typingView.visibility = View.GONE
+            return
+        }
+        typingDots = (typingDots % 3) + 1
+        val dots = ".".repeat(typingDots)
+        val who = if (names.size == 1) "${names[0]} is typing" else "${names.joinToString(", ")} are typing"
+        typingView.text = "$who$dots"
+        typingView.visibility = View.VISIBLE
     }
 
     private fun broadcastOwnMessage(text: String) {
@@ -881,6 +1010,56 @@ class MainActivity : AppCompatActivity() {
             }
         } finally {
             conn.disconnect()
+        }
+    }
+
+    // ---------------------------------------------------------- notifications
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            val channel = NotificationChannel(
+                CHANNEL_ID, "Messages", NotificationManager.IMPORTANCE_HIGH
+            ).apply { description = "Incoming mesh chat messages" }
+            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                .createNotificationChannel(channel)
+        }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestNotifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    private fun postNotification(title: String, text: String) {
+        try {
+            if (Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                return // user declined notifications
+            }
+            val intent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+            val pi = PendingIntent.getActivity(
+                this, 0, intent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setAutoCancel(true)
+                .setContentIntent(pi)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .build()
+            NotificationManagerCompat.from(this).notify(NOTIF_ID, notification)
+        } catch (e: Exception) {
+            logD("W", "Notify failed: ${e.message}")
         }
     }
 
