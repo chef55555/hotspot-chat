@@ -864,7 +864,7 @@ class MainActivity : AppCompatActivity() {
         }
         try {
             conn.inputStream.use { input ->
-                dest.outputStream.use { output ->
+                dest.outputStream().use { output ->
                     input.copyTo(output)
                 }
             }
