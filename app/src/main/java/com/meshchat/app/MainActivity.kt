@@ -53,6 +53,7 @@ import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Collections
 import java.util.Date
+import java.util.LinkedHashMap
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -99,8 +100,17 @@ class MainActivity : AppCompatActivity() {
     private val knownEndpoints = ConcurrentHashMap<String, Endpoint>()
     /** peerServiceNames we are currently dialing, to avoid duplicate dials. */
     private val dialing = Collections.synchronizedSet(HashSet<String>())
-    /** message UUIDs already shown/relayed, to kill relay loops. */
-    private val seenMessages = Collections.synchronizedSet(HashSet<String>())
+
+    /**
+     * Bounded, insertion-ordered message store keyed by msgId. Doubles as the
+     * dedup set (kills relay loops) and as the backlog we replay to peers that
+     * (re)connect, so they catch up on messages they missed. Guard with
+     * synchronized(history) — LinkedHashMap is not thread-safe.
+     */
+    private val history = object : LinkedHashMap<String, StoredMsg>(64, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, StoredMsg>) =
+            size > MAX_HISTORY
+    }
 
     private val resolveQueue = LinkedBlockingQueue<NsdServiceInfo>()
     private val resolveExecutor = Executors.newSingleThreadExecutor()
@@ -163,6 +173,8 @@ class MainActivity : AppCompatActivity() {
 
     private class Endpoint(val host: InetAddress, val port: Int)
 
+    private class StoredMsg(val id: String, val sender: String, val text: String)
+
     companion object {
         private const val TAG = "MeshChat"
         private const val HEARTBEAT_MS = 5_000L
@@ -173,6 +185,8 @@ class MainActivity : AppCompatActivity() {
         // practice. Base the cap on a conservative safe ceiling, copy 80% of it.
         private const val MAX_CLIPBOARD_BYTES = 500_000
         private const val LOG_BUFFER_CAP = 2_000_000
+
+        private const val MAX_HISTORY = 500   // messages retained for dedup + backlog replay
 
         private const val CHANNEL_ID = "messages"
         private const val NOTIF_ID = 1
@@ -654,6 +668,11 @@ class MainActivity : AppCompatActivity() {
             logD("I", "Connected to $name (\"$peerDisplay\")")
             updateStatus()
 
+            // Replay our backlog on a separate thread so this read loop can
+            // start draining immediately (avoids a write/write deadlock while
+            // both sides push history before reading).
+            ioExecutor.execute { sendHistory(peer) }
+
             var line: String?
             while (reader.readLine().also { line = it } != null) {
                 peer.lastRx = System.currentTimeMillis()
@@ -688,9 +707,19 @@ class MainActivity : AppCompatActivity() {
             line == "PING" -> sendRaw(from, "PONG")
             line == "PONG" -> { /* liveness only; lastRx already bumped */ }
             line.startsWith("MSG|") -> handleMessage(line, from)
+            line.startsWith("HIST|") -> handleHistory(line, from)
             line.startsWith("NAME|") -> handleName(line, from)
             line.startsWith("TYPE|") -> handleTyping(line, from)
             else -> logD("D", "Unknown line from ${from.name}: ${line.take(40)}")
+        }
+    }
+
+    /** Records a message if unseen. Returns true if it was new. */
+    private fun recordIfNew(id: String, sender: String, text: String): Boolean {
+        synchronized(history) {
+            if (history.containsKey(id)) return false
+            history[id] = StoredMsg(id, sender, text)
+            return true
         }
     }
 
@@ -700,7 +729,7 @@ class MainActivity : AppCompatActivity() {
         val msgId = parts[1]
         val sender = parts[2]
         val text = parts[3]
-        if (!seenMessages.add(msgId)) {
+        if (!recordIfNew(msgId, sender, text)) {
             logD("D", "Dropping duplicate msg $msgId from ${from.name}")
             return
         }
@@ -712,6 +741,33 @@ class MainActivity : AppCompatActivity() {
         logD("D", "Recv msg $msgId from ${from.name}: \"${text.take(40)}\"")
         relay(line, exclude = from.name, includeControl = false)
         updateStatus()
+    }
+
+    /**
+     * A backlog message replayed by a peer on (re)connect. Deduped like a live
+     * message, but shown as missed (no notification) and propagated to other
+     * peers as HIST so the whole mesh converges without a notification storm.
+     */
+    private fun handleHistory(line: String, from: Peer) {
+        val parts = line.split("|", limit = 4)
+        if (parts.size < 4) return
+        val msgId = parts[1]
+        val sender = parts[2]
+        val text = parts[3]
+        if (!recordIfNew(msgId, sender, text)) return   // already have it
+        msgRecv++
+        appendChat("$sender: $text")
+        logD("D", "Synced missed msg $msgId from ${from.name}")
+        relay(line, exclude = from.name, includeControl = true)
+        updateStatus()
+    }
+
+    /** Replay our backlog to a peer that just connected, so it catches up. */
+    private fun sendHistory(peer: Peer) {
+        val snapshot = synchronized(history) { history.values.toList() }
+        if (snapshot.isEmpty()) return
+        for (m in snapshot) sendRaw(peer, "HIST|${m.id}|${m.sender}|${m.text}")
+        logD("D", "Replayed ${snapshot.size} message(s) to ${peer.name}")
     }
 
     private fun handleName(line: String, from: Peer) {
@@ -765,7 +821,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun broadcastOwnMessage(text: String) {
         val msgId = UUID.randomUUID().toString()
-        seenMessages.add(msgId)
+        recordIfNew(msgId, displayName, text)
         val line = "MSG|$msgId|$displayName|$text"
         msgSent++
         appendChat("me: $text")
