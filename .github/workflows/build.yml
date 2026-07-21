@@ -19,14 +19,16 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v3
-
-      - name: Generate Gradle wrapper (8.4)
-        run: gradle wrapper --gradle-version 8.4 --distribution-type bin
+      # Pin Gradle 8.4 here so the `gradle` command on PATH IS 8.4 — do not
+      # rely on the runner's preinstalled Gradle (currently 9.x), which breaks
+      # AGP 8.1.4 and the injected Develocity init script.
+      - name: Set up Gradle 8.4
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.4'
 
       - name: Build debug APK
-        run: ./gradlew assembleDebug --stacktrace --no-daemon
+        run: gradle assembleDebug --stacktrace --no-daemon
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
