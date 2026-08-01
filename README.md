@@ -1,30 +1,32 @@
-# MeshChat — offline mesh chat over a Wi-Fi hotspot
+# Twenty48 — a 2048 puzzle game for Android
 
-Native Android (Kotlin) app that lets phones on a Wi-Fi hotspot with **no
-internet** chat with each other. One phone hosts the hotspot; every phone runs
-this app. No server, no signaling, no cloud at runtime.
+Native Android (Kotlin) implementation of the classic 2048 sliding-tile
+puzzle. Swipe to slide the tiles; equal tiles merge; reach **2048** to win
+(and keep going for a high score).
 
-## How it works
+No dependencies beyond AndroidX basics, no assets, no internet permission.
+The whole game — logic, custom Canvas rendering, animations, UI — lives in a
+single Kotlin file.
 
-- **Autodiscovery** — each phone advertises `_meshchat._tcp.` over NSD
-  (Android's mDNS/DNS-SD wrapper) and discovers the others.
-- **Transport** — each phone runs a `ServerSocket` on an ephemeral port. On
-  discovering a peer it resolves the service and opens a plain TCP socket.
-- **Full mesh broadcast** — every typed message goes to all connected peers,
-  and every received message is relayed to all *other* peers, so everyone sees
-  everything. A per-message UUID in a "seen" set breaks relay loops.
-- **Single connection per pair** — both phones discover each other, but only
-  the lexicographically smaller service name dials out, so you get one socket
-  per pair instead of two.
+## Features
+
+- Smooth slide, merge-pop, and spawn animations (custom `View` + Canvas)
+- Swipe gestures anywhere on the board
+- Score + persistent best score
+- One-step **Undo**
+- Game state survives app restarts (pick up where you left off)
+- Win and game-over overlays
+- Classic 2048 color palette, adaptive launcher icon
 
 ## Build (no laptop needed)
 
 The APK is built in the cloud via GitHub Actions:
 
 1. Push to any branch (or run the **Build APK** workflow manually).
-2. The workflow sets up JDK 17, generates the Gradle wrapper (8.4), runs
-   `assembleDebug`, and uploads `app-debug.apk` as an artifact.
-3. Download the artifact from the workflow run.
+2. The workflow sets up JDK 17 and Gradle 8.4, runs `assembleDebug`, and
+   uploads `app-debug.apk` as an artifact **and** publishes it as a GitHub
+   Release — on a phone, grab it from
+   `https://github.com/<owner>/<repo>/releases/latest`.
 
 ### Versions (the usual first-build failure point)
 
@@ -39,21 +41,24 @@ The APK is built in the cloud via GitHub Actions:
 
 ## Install & run
 
-1. On each phone, enable **Install unknown apps** for your file manager /
-   browser (the APK is an unsigned debug build).
-2. Sideload `app-debug.apk` onto each phone and open MeshChat.
-3. One phone turns on its Wi-Fi hotspot; the others join that hotspot's Wi-Fi.
-4. Wait **10–20 seconds** — NSD resolution can be slow/flaky. Watch the peer
-   count in the status bar. Tap **Rescan peers** if a phone doesn't show up.
+1. On the phone, enable **Install unknown apps** for your browser / file
+   manager (the APK is a debug build signed with a committed throwaway key).
+2. Download `app-debug.apk` from the latest Release (or the workflow
+   artifact) and install it.
+3. Play. Swipe up/down/left/right; tiles with the same number merge.
+
+The signing key is committed to the repo (`app/twenty48-debug.keystore`) so
+every CI build shares one signature and newer builds install over older ones
+without an uninstall.
 
 ## Files
 
 ```
-app/src/main/java/com/meshchat/app/MainActivity.kt   all logic + UI (programmatic)
-app/src/main/AndroidManifest.xml                     permissions
+app/src/main/java/com/twenty48/app/MainActivity.kt   game logic + view + UI
+app/src/main/AndroidManifest.xml                     app manifest (no permissions)
 app/build.gradle                                     module build config
 build.gradle                                          root plugin versions
 settings.gradle                                       modules + repos
-gradle.properties                                     Gradle/AndroidX flags
-.github/workflows/build.yml                           cloud build
+gradle.properties                                    Gradle/AndroidX flags
+.github/workflows/build.yml                          cloud build + release
 ```

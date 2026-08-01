@@ -1,22 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- A 2x2 mini-board of classic 2048 tile colors. Kept inside the 66dp safe
+     zone of the 108dp adaptive-icon canvas. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Mesh edges: a complete graph over 4 nodes (full mesh). -->
+    <!-- top-left: "2" tile -->
     <path
-        android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="4"
-        android:strokeLineCap="round"
-        android:pathData="M54,54 L54,32 M54,54 L36,66 M54,54 L72,66 M54,32 L36,66 M54,32 L72,66 M36,66 L72,66" />
-
-    <!-- Nodes, drawn on top of the edges. -->
+        android:fillColor="#FFEEE4DA"
+        android:pathData="M31,31 h21 a4,4 0 0 1 4,4 v17 a4,4 0 0 1 -4,4 h-21 a4,4 0 0 1 -4,-4 v-17 a4,4 0 0 1 4,-4 Z" />
+    <!-- top-right: "8" tile -->
     <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M46,54 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0 Z
-                          M47,32 a7,7 0 1,0 14,0 a7,7 0 1,0 -14,0 Z
-                          M29,66 a7,7 0 1,0 14,0 a7,7 0 1,0 -14,0 Z
-                          M65,66 a7,7 0 1,0 14,0 a7,7 0 1,0 -14,0 Z" />
+        android:fillColor="#FFF2B179"
+        android:pathData="M60,31 h17 a4,4 0 0 1 4,4 v17 a4,4 0 0 1 -4,4 h-17 a4,4 0 0 1 -4,-4 v-17 a4,4 0 0 1 4,-4 Z" />
+    <!-- bottom-left: "32" tile -->
+    <path
+        android:fillColor="#FFF67C5F"
+        android:pathData="M31,60 h21 a4,4 0 0 1 4,4 v13 a4,4 0 0 1 -4,4 h-21 a4,4 0 0 1 -4,-4 v-13 a4,4 0 0 1 4,-4 Z" />
+    <!-- bottom-right: "2048" tile -->
+    <path
+        android:fillColor="#FFEDC22E"
+        android:pathData="M60,60 h17 a4,4 0 0 1 4,4 v13 a4,4 0 0 1 -4,4 h-17 a4,4 0 0 1 -4,-4 v-13 a4,4 0 0 1 4,-4 Z" />
 </vector>

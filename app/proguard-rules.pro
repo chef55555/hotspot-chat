@@ -1,1 +1,1 @@
-# No custom ProGuard rules; minification is disabled for release too.
+# No custom rules needed; minification is disabled.

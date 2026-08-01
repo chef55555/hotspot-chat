@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace 'com.meshchat.app'
+    namespace 'com.twenty48.app'
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.meshchat.app"
+        applicationId "com.twenty48.app"
         minSdk 24
         targetSdk 34
         // versionCode/versionName come from Gradle properties so CI can bump
@@ -23,10 +23,10 @@ android {
     // would cause "signatures do not match" on update).
     signingConfigs {
         debugStable {
-            storeFile file("meshchat-debug.keystore")
-            storePassword "meshchat"
-            keyAlias "meshchat"
-            keyPassword "meshchat"
+            storeFile file("twenty48-debug.keystore")
+            storePassword "twenty48"
+            keyAlias "twenty48"
+            keyPassword "twenty48"
         }
     }
 
