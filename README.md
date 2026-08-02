@@ -4,18 +4,23 @@ Native Android (Kotlin) implementation of the classic 2048 sliding-tile
 puzzle. Swipe to slide the tiles; equal tiles merge; reach **2048** to win
 (and keep going for a high score).
 
-No dependencies beyond AndroidX basics, no assets, no internet permission.
-The whole game — logic, custom Canvas rendering, animations, UI — lives in a
-single Kotlin file.
+No dependencies beyond AndroidX basics, no assets. The whole game — logic,
+custom Canvas rendering, animations, UI — lives in a single Kotlin file.
 
 ## Features
 
 - Smooth slide, merge-pop, and spawn animations (custom `View` + Canvas)
 - Swipe gestures anywhere on the board
-- Score + persistent best score
+- Score + persistent best score, with floating "+N" score-gain animations
+- Haptic feedback on merges
+- **Dark theme** — follows the system setting, toggleable in-app (☾/☀)
 - One-step **Undo**
 - Game state survives app restarts (pick up where you left off)
 - Win and game-over overlays
+- **In-app auto-update**: on launch the app checks `version.json` on the
+  repo's latest GitHub Release; if CI has published a newer build, a banner
+  offers a one-tap download + install (this is why the app has the
+  `INTERNET` and `REQUEST_INSTALL_PACKAGES` permissions)
 - Classic 2048 color palette, adaptive launcher icon
 
 ## Build (no laptop needed)

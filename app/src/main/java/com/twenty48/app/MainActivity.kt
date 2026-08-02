@@ -2,7 +2,9 @@ package com.twenty48.app
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
+import android.content.res.Configuration
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
@@ -12,6 +14,7 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
@@ -19,11 +22,61 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
+import androidx.core.content.pm.PackageInfoCompat
+import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.sin
 import kotlin.random.Random
+
+// ---------------------------------------------------------------------------
+// Theme palette (light / dark). Tile colors are shared between themes.
+// ---------------------------------------------------------------------------
+
+object Palette {
+    var dark = false
+        private set
+    var bg = 0
+    var headerText = 0
+    var board = 0
+    var emptyCell = 0
+    var scoreBox = 0
+    var scoreLabel = 0
+    var overlayLose = 0
+    var overlayLoseText = 0
+    val button = 0xFF8F7A66.toInt()
+    val overlayWin = 0xB3EDC22E.toInt()
+    val textLight = 0xFFF9F6F2.toInt()
+
+    fun apply(isDark: Boolean) {
+        dark = isDark
+        if (isDark) {
+            bg = 0xFF1C1A17.toInt()
+            headerText = 0xFFEEE4DA.toInt()
+            board = 0xFF3A342C.toInt()
+            emptyCell = 0xFF4A4339.toInt()
+            scoreBox = 0xFF3A342C.toInt()
+            scoreLabel = 0xFFB8AC9F.toInt()
+            overlayLose = 0xC42B2722.toInt()
+            overlayLoseText = 0xFFEEE4DA.toInt()
+        } else {
+            bg = 0xFFFAF8EF.toInt()
+            headerText = 0xFF776E65.toInt()
+            board = 0xFFBBADA0.toInt()
+            emptyCell = 0xFFCDC1B4.toInt()
+            scoreBox = 0xFFBBADA0.toInt()
+            scoreLabel = 0xFFEEE4DA.toInt()
+            overlayLose = 0xBBEEE4DA.toInt()
+            overlayLoseText = 0xFF776E65.toInt()
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Game logic (no Android dependencies)
@@ -37,6 +90,7 @@ class MoveResult(
     val mergedCells: List<Int>,
     val spawnCell: Int,
     val won2048: Boolean,
+    val gained: Int,
 )
 
 class Game {
@@ -123,7 +177,7 @@ class Game {
         if (score > best) best = score
         if (wonNow) won = true
         val spawnCell = spawn()
-        return MoveResult(slides, merged, spawnCell, wonNow)
+        return MoveResult(slides, merged, spawnCell, wonNow, gained)
     }
 
     fun undo(): Boolean {
@@ -160,7 +214,7 @@ class Game {
 class GameView(
     context: Context,
     private val game: Game,
-    private val onStateChange: () -> Unit,
+    private val onStateChange: (Int) -> Unit,
 ) : View(context) {
 
     private val boardPaint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -203,11 +257,11 @@ class GameView(
     private fun cellY(r: Int) = pad + r * (cell + pad)
 
     override fun onDraw(canvas: Canvas) {
-        boardPaint.color = COLOR_BOARD
+        boardPaint.color = Palette.board
         rect.set(0f, 0f, width.toFloat(), height.toFloat())
         canvas.drawRoundRect(rect, corner * 1.5f, corner * 1.5f, boardPaint)
 
-        cellPaint.color = COLOR_EMPTY_CELL
+        cellPaint.color = Palette.emptyCell
         for (r in 0 until 4) for (c in 0 until 4) {
             rect.set(cellX(c), cellY(r), cellX(c) + cell, cellY(r) + cell)
             canvas.drawRoundRect(rect, corner, corner, cellPaint)
@@ -282,11 +336,11 @@ class GameView(
     }
 
     private fun drawOverlay(canvas: Canvas) {
-        overlayPaint.color = if (overlay == OVERLAY_WIN) 0xB3EDC22E.toInt() else 0xBBEEE4DA.toInt()
+        overlayPaint.color = if (overlay == OVERLAY_WIN) Palette.overlayWin else Palette.overlayLose
         rect.set(0f, 0f, width.toFloat(), height.toFloat())
         canvas.drawRoundRect(rect, corner * 1.5f, corner * 1.5f, overlayPaint)
 
-        textPaint.color = if (overlay == OVERLAY_WIN) COLOR_TEXT_LIGHT else COLOR_TEXT_DARK
+        textPaint.color = if (overlay == OVERLAY_WIN) Palette.textLight else Palette.overlayLoseText
         textPaint.textSize = width * 0.12f
         val cx = width / 2f
         canvas.drawText(if (overlay == OVERLAY_WIN) "You win!" else "Game over!", cx, height * 0.46f, textPaint)
@@ -338,10 +392,16 @@ class GameView(
         if (overlay != OVERLAY_NONE) return
         anim = null // a still-running animation's grid is already final; skip to it
         val res = game.move(dir) ?: return
+        if (res.mergedCells.isNotEmpty()) {
+            performHapticFeedback(
+                if (res.won2048) HapticFeedbackConstants.LONG_PRESS
+                else HapticFeedbackConstants.KEYBOARD_TAP
+            )
+        }
         if (res.won2048) pendingWin = true
         anim = res
         animStart = SystemClock.uptimeMillis()
-        onStateChange()
+        onStateChange(res.gained)
         invalidate()
     }
 
@@ -350,7 +410,7 @@ class GameView(
         anim = null
         overlay = OVERLAY_NONE
         pendingWin = false
-        onStateChange()
+        onStateChange(0)
         invalidate()
     }
 
@@ -359,7 +419,7 @@ class GameView(
         anim = null
         overlay = OVERLAY_NONE
         pendingWin = false
-        onStateChange()
+        onStateChange(0)
         invalidate()
     }
 
@@ -383,15 +443,14 @@ class GameView(
         private const val OVERLAY_LOSE = 1
         private const val OVERLAY_WIN = 2
 
-        private val COLOR_BOARD = 0xFFBBADA0.toInt()
-        private val COLOR_EMPTY_CELL = 0xFFCDC1B4.toInt()
         private val COLOR_TEXT_DARK = 0xFF776E65.toInt()
         private val COLOR_TEXT_LIGHT = 0xFFF9F6F2.toInt()
     }
 }
 
 // ---------------------------------------------------------------------------
-// Activity: programmatic UI (header, score boxes, buttons, board)
+// Activity: programmatic UI (header, score boxes, buttons, board), theme
+// toggle, floating score gains, in-app auto-update from GitHub Releases
 // ---------------------------------------------------------------------------
 
 class MainActivity : AppCompatActivity() {
@@ -399,9 +458,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var prefs: SharedPreferences
     private lateinit var game: Game
     private lateinit var gameView: GameView
+    private lateinit var rootFrame: FrameLayout
+    private lateinit var rootColumn: LinearLayout
     private lateinit var scoreValue: TextView
     private lateinit var bestValue: TextView
     private lateinit var undoButton: TextView
+    private var updateBanner: TextView? = null
 
     private fun dp(v: Float) =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, resources.displayMetrics)
@@ -412,13 +474,23 @@ class MainActivity : AppCompatActivity() {
         game = Game()
         restoreState()
 
-        window.statusBarColor = COLOR_BG
-        @Suppress("DEPRECATION")
-        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+        // Theme: explicit choice wins; otherwise follow the system setting.
+        val dark = if (prefs.contains("dark")) {
+            prefs.getBoolean("dark", false)
+        } else {
+            (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+                Configuration.UI_MODE_NIGHT_YES
+        }
+        Palette.apply(dark)
 
-        val root = LinearLayout(this).apply {
+        window.statusBarColor = Palette.bg
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility =
+            if (Palette.dark) 0 else View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+
+        rootColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(COLOR_BG)
+            setBackgroundColor(Palette.bg)
             val p = dp(16f).toInt()
             setPadding(p, p, p, p)
         }
@@ -430,7 +502,7 @@ class MainActivity : AppCompatActivity() {
         }
         val title = TextView(this).apply {
             text = "2048"
-            setTextColor(COLOR_TEXT_DARK)
+            setTextColor(Palette.headerText)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 44f)
             setTypeface(typeface, Typeface.BOLD)
         }
@@ -446,7 +518,7 @@ class MainActivity : AppCompatActivity() {
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply { leftMargin = dp(8f).toInt() })
 
-        root.addView(header)
+        rootColumn.addView(header)
 
         // -- subtitle + buttons --
         val controls = LinearLayout(this).apply {
@@ -455,35 +527,48 @@ class MainActivity : AppCompatActivity() {
         }
         val subtitle = TextView(this).apply {
             text = "Swipe to join the numbers\nand reach 2048!"
-            setTextColor(COLOR_TEXT_DARK)
+            setTextColor(Palette.headerText)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         }
         controls.addView(subtitle, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
 
+        val themeButton = makeButton(if (Palette.dark) "☀" else "☾") {
+            prefs.edit().putBoolean("dark", !Palette.dark).apply()
+            recreate()
+        }
+        controls.addView(themeButton)
+
         undoButton = makeButton("UNDO") { gameView.undo() }
-        controls.addView(undoButton)
+        controls.addView(undoButton, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { leftMargin = dp(8f).toInt() })
 
         val newButton = makeButton("NEW") { confirmNewGame() }
         controls.addView(newButton, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply { leftMargin = dp(8f).toInt() })
 
-        root.addView(controls, LinearLayout.LayoutParams(
+        rootColumn.addView(controls, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply { topMargin = dp(12f).toInt() })
 
         // -- board (kept square by GameView.onMeasure, centered in leftover space) --
-        gameView = GameView(this, game) { onGameStateChanged() }
+        gameView = GameView(this, game) { gained -> onGameStateChanged(gained) }
         val boardFrame = FrameLayout(this)
         boardFrame.addView(gameView, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER
         ))
-        root.addView(boardFrame, LinearLayout.LayoutParams(
+        rootColumn.addView(boardFrame, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
         ).apply { topMargin = dp(12f).toInt() })
 
-        setContentView(root)
-        onGameStateChanged()
+        rootFrame = FrameLayout(this)
+        rootFrame.addView(rootColumn, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+        setContentView(rootFrame)
+        onGameStateChanged(0)
+        checkForUpdate()
     }
 
     private fun makeScoreBox(label: String): Pair<LinearLayout, TextView> {
@@ -491,7 +576,7 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             background = GradientDrawable().apply {
-                setColor(0xFFBBADA0.toInt())
+                setColor(Palette.scoreBox)
                 cornerRadius = dp(6f)
             }
             val ph = dp(14f).toInt()
@@ -501,7 +586,7 @@ class MainActivity : AppCompatActivity() {
         }
         val labelView = TextView(this).apply {
             text = label
-            setTextColor(0xFFEEE4DA.toInt())
+            setTextColor(Palette.scoreLabel)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             setTypeface(typeface, Typeface.BOLD)
             gravity = Gravity.CENTER
@@ -521,11 +606,11 @@ class MainActivity : AppCompatActivity() {
     private fun makeButton(label: String, onClick: () -> Unit): TextView =
         TextView(this).apply {
             text = label
-            setTextColor(0xFFF9F6F2.toInt())
+            setTextColor(Palette.textLight)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             setTypeface(typeface, Typeface.BOLD)
             background = GradientDrawable().apply {
-                setColor(0xFF8F7A66.toInt())
+                setColor(Palette.button)
                 cornerRadius = dp(6f)
             }
             val ph = dp(16f).toInt()
@@ -534,19 +619,56 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { onClick() }
         }
 
+    private fun themedDialog(): AlertDialog.Builder {
+        val style = if (Palette.dark) {
+            androidx.appcompat.R.style.Theme_AppCompat_Dialog_Alert
+        } else {
+            androidx.appcompat.R.style.Theme_AppCompat_Light_Dialog_Alert
+        }
+        return AlertDialog.Builder(this, style)
+    }
+
     private fun confirmNewGame() {
-        AlertDialog.Builder(this)
+        themedDialog()
             .setMessage("Start a new game?")
             .setPositiveButton("New game") { _, _ -> gameView.newGame() }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
-    private fun onGameStateChanged() {
+    private fun onGameStateChanged(gained: Int) {
         scoreValue.text = game.score.toString()
         bestValue.text = game.best.toString()
         undoButton.alpha = if (game.canUndo) 1f else 0.4f
         saveState()
+        if (gained > 0) showScoreGain(gained)
+    }
+
+    /** Floating "+N" that drifts up from the score box and fades out. */
+    private fun showScoreGain(gained: Int) {
+        val scoreLoc = IntArray(2)
+        scoreValue.getLocationInWindow(scoreLoc)
+        val rootLoc = IntArray(2)
+        rootFrame.getLocationInWindow(rootLoc)
+        val float = TextView(this).apply {
+            text = "+$gained"
+            setTextColor(Palette.headerText)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            setTypeface(typeface, Typeface.BOLD)
+            alpha = 0.95f
+        }
+        rootFrame.addView(float, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            leftMargin = scoreLoc[0] - rootLoc[0]
+            topMargin = scoreLoc[1] - rootLoc[1]
+        })
+        float.animate()
+            .translationY(-dp(42f))
+            .alpha(0f)
+            .setDuration(700)
+            .withEndAction { rootFrame.removeView(float) }
+            .start()
     }
 
     private fun restoreState() {
@@ -586,8 +708,95 @@ class MainActivity : AppCompatActivity() {
         saveState()
     }
 
+    // -----------------------------------------------------------------------
+    // Auto-update: every CI build publishes version.json + the APK to the
+    // repo's latest GitHub Release. On launch, compare versionCode and offer
+    // a one-tap download-and-install. Silent on any failure (e.g. offline).
+    // -----------------------------------------------------------------------
+
+    private fun checkForUpdate() {
+        if (updateChecked) return
+        updateChecked = true
+        Thread {
+            try {
+                val conn = URL(VERSION_JSON_URL).openConnection() as HttpURLConnection
+                conn.connectTimeout = 5000
+                conn.readTimeout = 5000
+                val text = conn.inputStream.bufferedReader().use { it.readText() }
+                conn.disconnect()
+                val json = JSONObject(text)
+                val remoteCode = json.getLong("versionCode")
+                val remoteName = json.getString("versionName")
+                val apkUrl = json.getString("apkUrl")
+                val myCode = PackageInfoCompat.getLongVersionCode(
+                    packageManager.getPackageInfo(packageName, 0)
+                )
+                if (remoteCode > myCode) {
+                    runOnUiThread { showUpdateBanner(remoteName, apkUrl) }
+                }
+            } catch (_: Exception) {
+                // No network / no release yet — stay quiet.
+            }
+        }.start()
+    }
+
+    private fun showUpdateBanner(versionName: String, apkUrl: String) {
+        if (updateBanner != null || isFinishing) return
+        val banner = TextView(this).apply {
+            text = "Update $versionName available — tap to install"
+            setTextColor(Palette.textLight)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTypeface(typeface, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                setColor(Palette.button)
+                cornerRadius = dp(6f)
+            }
+            val p = dp(12f).toInt()
+            setPadding(p, p, p, p)
+        }
+        banner.setOnClickListener { downloadAndInstall(apkUrl, banner) }
+        updateBanner = banner
+        rootColumn.addView(banner, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(12f).toInt() })
+    }
+
+    private fun downloadAndInstall(apkUrl: String, banner: TextView) {
+        banner.text = "Downloading update…"
+        banner.isEnabled = false
+        Thread {
+            try {
+                val dir = File(cacheDir, "updates")
+                dir.mkdirs()
+                val file = File(dir, "update.apk")
+                val conn = URL(apkUrl).openConnection() as HttpURLConnection
+                conn.connectTimeout = 10000
+                conn.readTimeout = 60000
+                conn.inputStream.use { input ->
+                    FileOutputStream(file).use { output -> input.copyTo(output) }
+                }
+                conn.disconnect()
+                val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+                val intent = Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                runOnUiThread {
+                    banner.text = "Installing…"
+                    startActivity(intent)
+                }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    banner.text = "Update failed — tap to retry"
+                    banner.isEnabled = true
+                }
+            }
+        }.start()
+    }
+
     companion object {
-        private val COLOR_BG = 0xFFFAF8EF.toInt()
-        private val COLOR_TEXT_DARK = 0xFF776E65.toInt()
+        private const val VERSION_JSON_URL =
+            "https://github.com/chef55555/hotspot-chat/releases/latest/download/version.json"
+        private var updateChecked = false
     }
 }

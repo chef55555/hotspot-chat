@@ -44,7 +44,23 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-      # ---- Publish a GitHub Release so the APK is one tap away on a phone ----
+      # ---- Publish a GitHub Release so the APK is one tap away on a phone,
+      # ---- plus version.json so installed apps can offer in-app updates ----
+      - name: Stage release assets
+        if: github.event_name == 'push'
+        run: |
+          mkdir -p release
+          cp app/build/outputs/apk/debug/app-debug.apk release/app-debug.apk
+          NOTES=$(printf '%s' "${{ github.event.head_commit.message }}" | head -n 1)
+          jq -n \
+            --argjson vc "${{ github.run_number }}" \
+            --arg vn "1.0.${{ github.run_number }}" \
+            --arg url "https://github.com/${{ github.repository }}/releases/latest/download/app-debug.apk" \
+            --arg notes "$NOTES" \
+            '{versionCode:$vc, versionName:$vn, apkUrl:$url, notes:$notes}' \
+            > release/version.json
+          cat release/version.json
+
       - name: Publish Release
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
@@ -52,4 +68,6 @@ jobs:
           tag_name: twenty48-v1.0.${{ github.run_number }}
           name: Twenty48 1.0.${{ github.run_number }}
           make_latest: true
-          files: app/build/outputs/apk/debug/app-debug.apk
+          files: |
+            release/app-debug.apk
+            release/version.json
